@@ -3,6 +3,8 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/state/WorkspaceState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 
 #include <algorithm>
 
@@ -20,7 +22,7 @@ Snapshot capture() {
      * Get current workspaces.
      */
     auto workspaces =
-        g_pCompositor->getWorkspacesCopy();
+        State::workspaceState()->workspacesCopy();
 
 
     /*
@@ -71,7 +73,7 @@ Snapshot capture() {
          * Capture windows.
          */
         for (const auto& window :
-             g_pCompositor->m_windows) {
+             Desktop::windowState()->windows()) {
 
             if (!window)
                 continue;
@@ -112,15 +114,11 @@ Snapshot capture() {
 
 
             const auto position =
-                window
-                    ->m_realPosition
-                    ->value();
+                window->m_reportedPosition;
 
 
             const auto size =
-                window
-                    ->m_realSize
-                    ->value();
+                window->m_reportedSize;
 
 
             win.x =

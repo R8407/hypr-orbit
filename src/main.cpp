@@ -4,16 +4,21 @@
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/Texture.hpp>
+#include <hyprland/src/render/gl/GLTexture.hpp>
 #include <hyprland/src/render/pass/RectPassElement.hpp>
 #include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/SurfacePassElement.hpp>
 #include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
 #include <hyprland/src/render/pass/Pass.hpp>
-#include <hyprland/src/managers/PointerManager.hpp>
+#include <hyprland/src/pointer/PointerManager.hpp>
+#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/desktop/view/WLSurface.hpp>
 #include <hyprland/src/protocols/core/Compositor.hpp>
+#include <hyprland/src/state/WorkspaceState.hpp>
+#include <hyprland/src/state/MonitorState.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
 
 #include <cairo/cairo.h>
 
@@ -58,11 +63,24 @@ constexpr double ORBIT_R = 300.0;
 constexpr double CARD_R  = 90.0;
 constexpr double TAU     = 2.0 * std::numbers::pi;
 
+PHLMONITOR getMonitorFromCursor() {
+    auto pos = Pointer::mgr()->position();
+    for (auto& mon : State::monitorState()->monitors())
+        if (mon && mon->m_enabled) {
+            if (pos.x >= mon->m_position.x && pos.x < mon->m_position.x + mon->m_size.x &&
+                pos.y >= mon->m_position.y && pos.y < mon->m_position.y + mon->m_size.y)
+                return mon;
+        }
+    for (auto& mon : State::monitorState()->monitors())
+        if (mon && mon->m_enabled) return mon;
+    return nullptr;
+}
+
 /* ============================================================
  * Side panel text cache
  * ============================================================ */
 
-SP<CTexture> g_panelTex;
+SP<Render::ITexture> g_panelTex;
 int g_panelWsID = -1;
 int g_panelSel = -1;
 double g_panelW = 0, g_panelH = 0;
@@ -72,7 +90,7 @@ constexpr int LINE_H      = 28;
 constexpr int PAD         = 16;
 constexpr int HEADER_H    = 40;
 
-SP<CTexture> renderTextToTexture(const std::vector<std::string>& lines, double& outW, double& outH) {
+SP<Render::ITexture> renderTextToTexture(const std::vector<std::string>& lines, double& outW, double& outH) {
 
     int maxChars = 0;
     for (auto& l : lines)
@@ -133,7 +151,7 @@ SP<CTexture> renderTextToTexture(const std::vector<std::string>& lines, double& 
     uint8_t* data = cairo_image_surface_get_data(surf);
     int stride = cairo_image_surface_get_stride(surf);
 
-    CSharedPointer<CTexture> tex(new CTexture(DRM_FORMAT_ARGB8888, data, stride, Vector2D{(double)w, (double)h}, true));
+    CSharedPointer<Render::ITexture> tex(new     Render::GL::CGLTexture(DRM_FORMAT_ARGB8888, data, stride, Vector2D{(double)w, (double)h}, true));
 
     outW = w;
     outH = h;
@@ -144,7 +162,7 @@ SP<CTexture> renderTextToTexture(const std::vector<std::string>& lines, double& 
 
 void rebuildPanelTexture(WORKSPACEID wsID) {
     if (!g_pCompositor) return;
-    auto ws = g_pCompositor->getWorkspaceByID(wsID);
+    auto ws = State::workspaceState()->query().id(wsID).run();
     if (!ws) return;
 
     std::vector<std::string> lines;
@@ -157,7 +175,7 @@ void rebuildPanelTexture(WORKSPACEID wsID) {
 
     /* collect windows */
     std::vector<WindowInfo> wins;
-    for (auto& w : g_pCompositor->m_windows) {
+    for (auto& w : Desktop::windowState()->windows()) {
         if (!w || w->m_workspace != ws || !w->m_isMapped) continue;
         wins.push_back({w->m_class, w->m_title});
     }
@@ -192,16 +210,16 @@ void addBorder(CBox b, CHyprColor c, int s, int round = 0) {
 
 void renderWindowMini(PHLWINDOW w, PHLMONITOR m, CBox t, const Time::steady_tp& ti) {
     if (!w || !m || !w->m_isMapped || !w->wlSurface() || !w->wlSurface()->resource()) return;
-    auto oP = w->m_realPosition->value();
-    auto oS = w->m_realSize->value();
+    auto oP = w->m_reportedPosition;
+    auto oS = w->m_reportedSize;
     float sc = t.w / std::max((float)oS.x * m->m_scale, 5.0f);
     if (sc <= 0 || t.w <= 0) return;
 
     Vector2D tr = t.pos() / sc - (oP + w->m_floatingOffset - m->m_position) * m->m_scale;
 
-    SRenderModifData mod; mod.enabled = true;
-    mod.modifs.push_back({SRenderModifData::RMOD_TYPE_TRANSLATE, std::any(tr)});
-    mod.modifs.push_back({SRenderModifData::RMOD_TYPE_SCALE, std::any(sc)});
+    Render::SRenderModifData mod; mod.enabled = true;
+    mod.modifs.push_back({Render::SRenderModifData::RMOD_TYPE_TRANSLATE, std::any(tr)});
+    mod.modifs.push_back({Render::SRenderModifData::RMOD_TYPE_SCALE, std::any(sc)});
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(
         CRendererHintsPassElement::SData{.renderModif = mod}));
 
@@ -212,8 +230,8 @@ void renderWindowMini(PHLWINDOW w, PHLMONITOR m, CBox t, const Time::steady_tp& 
     rd.surface = w->wlSurface()->resource(); rd.pWindow = w;
     rd.decorate = false; rd.blur = false; rd.alpha = 1; rd.fadeAlpha = 1;
     rd.clipBox = t; rd.squishOversized = true;
-    rd.dontRound = w->m_fullscreenState.internal != FSMODE_NONE;
-    rd.rounding = rd.dontRound ? 0 : (int)(w->rounding() * sc * m->m_scale);
+    rd.dontRound = false;
+    rd.rounding = (int)(w->rounding() * sc * m->m_scale);
     rd.roundingPower = w->roundingPower();
 
     w->wlSurface()->resource()->breadthfirst(
@@ -225,7 +243,7 @@ void renderWindowMini(PHLWINDOW w, PHLMONITOR m, CBox t, const Time::steady_tp& 
         }, nullptr);
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(
-        CRendererHintsPassElement::SData{.renderModif = SRenderModifData()}));
+        CRendererHintsPassElement::SData{.renderModif = Render::SRenderModifData()}));
 }
 
 void initParticles() {
@@ -252,7 +270,7 @@ void initParticles() {
 
 void buildCards() {
     g_cards.clear();
-    auto ws = g_pCompositor->getWorkspacesCopy();
+    auto ws = State::workspaceState()->workspacesCopy();
     for (auto& w : ws)
         if (w && !w->m_isSpecialWorkspace) g_cards.push_back({w->m_id, 0});
     std::sort(g_cards.begin(), g_cards.end(), [](auto& a, auto& b){ return a.id < b.id; });
@@ -265,7 +283,7 @@ void open() {
     if (g_visible) return;
     buildCards();
     if (g_cards.empty()) return;
-    auto m = g_pCompositor->getMonitorFromCursor();
+    auto m = getMonitorFromCursor();
     if (!m) return;
     g_selected = 0;
     for (int i = 0; i < (int)g_cards.size(); ++i)
@@ -274,10 +292,10 @@ void open() {
     g_panelTex = nullptr;
     g_panelWsID = -1;
     /* damage all monitors to force immediate render */
-    for (auto& mon : g_pCompositor->m_monitors)
+    for (auto& mon : State::monitorState()->monitors())
         if (mon && mon->m_enabled) {
             g_pHyprRenderer->damageMonitor(mon);
-            g_pCompositor->scheduleFrameForMonitor(mon);
+            mon->scheduleFrame();
         }
 }
 
@@ -286,7 +304,7 @@ void close() {
     g_visible = false;
     g_panelTex = nullptr;
     g_panelWsID = -1;
-    for (auto& m : g_pCompositor->m_monitors)
+    for (auto& m : State::monitorState()->monitors())
         if (m && m->m_enabled) g_pHyprRenderer->damageMonitor(m);
 }
 
@@ -323,8 +341,6 @@ void renderOnMonitor(PHLMONITOR mon) {
 
     double cx = mon->m_size.x / 2.0, cy = mon->m_size.y / 2.0;
 
-    g_pHyprOpenGL->m_renderData.clipBox = {{0, 0}, mon->m_transformedSize};
-
     /* dim overlay */
     addRect({0.0, 0.0, mon->m_size.x, mon->m_size.y}, CHyprColor(0, 0, 0, 0.5));
 
@@ -356,8 +372,8 @@ void renderOnMonitor(PHLMONITOR mon) {
 
         addRect(box, sel ? CHyprColor(0.2, 0.35, 0.6, 0.4) : CHyprColor(0.1, 0.1, 0.15, 0.5));
 
-        auto ws = g_pCompositor->getWorkspaceByID(c.id);
-        if (ws) for (auto& w : g_pCompositor->m_windows)
+        auto ws = State::workspaceState()->query().id(c.id).run();
+        if (ws) for (auto& w : Desktop::windowState()->windows())
             if (w && w->m_workspace == ws && w->m_isMapped)
                 renderWindowMini(w, mon, box, ti);
 
@@ -390,7 +406,7 @@ void renderOnMonitor(PHLMONITOR mon) {
     }
 
     g_pHyprRenderer->damageMonitor(mon);
-    g_pCompositor->scheduleFrameForMonitor(mon);
+    mon->scheduleFrame();
 }
 
 } // namespace
@@ -403,18 +419,17 @@ extern "C" EXPORT PLUGIN_DESCRIPTION_INFO pluginInit(HANDLE h) {
 
     g_renderHook = Event::bus()->m_events.render.stage.listen([](eRenderStage s) {
         if (s != RENDER_POST_WINDOWS) return;
-        auto mon = g_pHyprOpenGL->m_renderData.pMonitor.lock();
-        if (!mon) for (auto& m : g_pCompositor->m_monitors) if (m && m->m_enabled) { mon = m; break; }
-        if (mon) renderOnMonitor(mon);
+        for (auto& m : State::monitorState()->monitors())
+            if (m && m->m_enabled) { renderOnMonitor(m); break; }
     });
 
     g_mouseHook = Event::bus()->m_events.input.mouse.button.listen(
         [](const IPointer::SButtonEvent& e, Event::SCallbackInfo& info) {
             if (!g_visible || e.button != BTN_LEFT || e.state != WL_POINTER_BUTTON_STATE_PRESSED) return;
             info.cancelled = true;
-            auto mon = g_pCompositor->getMonitorFromCursor();
+            auto mon = getMonitorFromCursor();
             if (!mon) return;
-            auto pos = g_pPointerManager->position();
+            auto pos = Pointer::mgr()->position();
             double mx = pos.x - mon->m_position.x;
             double my = pos.y - mon->m_position.y;
             int hit = -1;
@@ -424,7 +439,7 @@ extern "C" EXPORT PLUGIN_DESCRIPTION_INFO pluginInit(HANDLE h) {
     g_mouseMoveHook = Event::bus()->m_events.input.mouse.move.listen(
         [](const Vector2D& cursorPos, Event::SCallbackInfo& info) {
             if (!g_visible) return;
-            auto mon = g_pCompositor->getMonitorFromCursor();
+            auto mon = getMonitorFromCursor();
             if (!mon) return;
             double mx = cursorPos.x - mon->m_position.x;
             double my = cursorPos.y - mon->m_position.y;

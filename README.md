@@ -46,11 +46,11 @@ The plugin registers a custom Hyprland dispatcher (`hypr-orbit`) and hooks into 
 | `input.keyboard.key` | Handles arrow keys, Enter, Escape |
 
 **Rendering pipeline:**
-1. On each frame (when visible), the plugin iterates all non-special workspaces via `g_pCompositor->getWorkspacesCopy()`
+1. On each frame (when visible), the plugin iterates all non-special workspaces via `State::workspaceState()->workspacesCopy()`
 2. Each workspace gets a `Card` struct with an angle calculated as `(-pi/2) + (2*pi * i / n)` where `n` is the total workspace count
 3. Cards are positioned at `(cx + cos(angle) * ORBIT_R, cy + sin(angle) * ORBIT_R)` where `ORBIT_R = 300px`
-4. Each card renders its workspace's mapped windows as scaled-down thumbnails using `CSurfacePassElement` with `SRenderModifData` for scale/translate transforms
-5. A Cairo-rendered side panel shows workspace info as a texture (`CTexture`) composited via `CTexPassElement`
+4. Each card renders its workspace's mapped windows as scaled-down thumbnails using `CSurfacePassElement` with `Render::SRenderModifData` for scale/translate transforms
+5. A Cairo-rendered side panel shows workspace info as a texture (`Render::ITexture`) composited via `CTexPassElement`
 6. 12 animated particles orbit at varying radii and speeds for visual polish
 
 **Dispatcher commands:**
@@ -62,9 +62,9 @@ Closing the orbit with a card selected switches to that workspace via `HyprlandA
 
 ## Requirements
 
-- Hyprland 0.54.3 (plugin API v0.54.3)
+- Hyprland 0.56.2 (plugin API v0.56.2)
 - `g++` with C++26 support
-- `pkg-config` with `hyprland` and `cairo` development files
+- `pkg-config` with `hyprland`, `hyprutils`, `hyprgraphics`, `hyprcursor`, `cairo`, `pixman-1`, `libdrm`, `wayland-server`, `xkbcommon`, and `libinput` development files
 
 ## Installation
 
